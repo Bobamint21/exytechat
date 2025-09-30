@@ -7,6 +7,151 @@
 
 import SwiftUI
 
+// PERFORMANCE FIX: Cache sections AND rows for instant message updates
+private class SectionCache {
+    private var cachedSections: [Date: MessagesSection] = [:]
+    private var lastMessageIDs: [String] = []
+    
+    func mapMessagesWithCache(_ messages: [Message], chatType: ChatType, replyMode: ReplyMode) -> [MessagesSection] {
+        let messageIDs = messages.map { $0.id }
+        
+        // Group messages by date in ONE pass (fast dictionary grouping)
+        var messagesByDate: [Date: [Message]] = [:]
+        for message in messages {
+            let startOfDay = message.createdAt.startOfDay()
+            messagesByDate[startOfDay, default: []].append(message)
+        }
+        
+        let sortedDates = messagesByDate.keys.sorted(by: >)
+        var result: [MessagesSection] = []
+        
+        // Check if only new message was added (most common case for instant updates)
+        let isIncrementalUpdate = lastMessageIDs.count + 1 == messageIDs.count &&
+                                   lastMessageIDs.allSatisfy { messageIDs.contains($0) }
+        
+        for date in sortedDates {
+            guard let messagesForDate = messagesByDate[date] else { continue }
+            
+            // Check if this date section is cached and unchanged
+            if let cachedSection = cachedSections[date],
+               cachedSection.rows.count == messagesForDate.count,
+               !isIncrementalUpdate {
+                // Reuse cached section - INSTANT!
+                result.append(cachedSection)
+                continue
+            }
+            
+            // Build section for this date
+            let isFirstSection = date == sortedDates.first
+            let isLastSection = date == sortedDates.last
+            let rows = wrapMessagesForDate(messagesForDate, chatType: chatType, replyMode: replyMode, 
+                                          isFirstSection: isFirstSection, isLastSection: isLastSection)
+            
+            let section = MessagesSection(date: date, rows: rows)
+            cachedSections[date] = section
+            result.append(section)
+        }
+        
+        lastMessageIDs = messageIDs
+        return result
+    }
+    
+    private func wrapMessagesForDate(_ messages: [Message], chatType: ChatType, replyMode: ReplyMode, isFirstSection: Bool, isLastSection: Bool) -> [MessageRow] {
+        messages
+            .enumerated()
+            .map { index, message in
+                let nextMessage = chatType == .conversation ? messages[safe: index + 1] : messages[safe: index - 1]
+                let prevMessage = chatType == .conversation ? messages[safe: index - 1] : messages[safe: index + 1]
+
+                let nextMessageExists = nextMessage != nil
+                let prevMessageExists = prevMessage != nil
+                let nextMessageIsSameUser = nextMessage?.user.id == message.user.id
+                let prevMessageIsSameUser = prevMessage?.user.id == message.user.id
+
+                let positionInUserGroup: PositionInUserGroup
+                if nextMessageExists, nextMessageIsSameUser, prevMessageIsSameUser {
+                    positionInUserGroup = .middle
+                } else if !nextMessageExists || !nextMessageIsSameUser, !prevMessageIsSameUser {
+                    positionInUserGroup = .single
+                } else if nextMessageExists, nextMessageIsSameUser {
+                    positionInUserGroup = .first
+                } else {
+                    positionInUserGroup = .last
+                }
+
+                let positionInMessagesSection: PositionInMessagesSection
+                if messages.count == 1 {
+                    positionInMessagesSection = .single
+                } else if !prevMessageExists {
+                    positionInMessagesSection = .first
+                } else if !nextMessageExists {
+                    positionInMessagesSection = .last
+                } else {
+                    positionInMessagesSection = .middle
+                }
+
+                if replyMode == .quote {
+                    return MessageRow(
+                        message: message, positionInUserGroup: positionInUserGroup,
+                        positionInMessagesSection: positionInMessagesSection, commentsPosition: nil)
+                }
+
+                let nextMessageIsAReply = nextMessage?.replyMessage != nil
+                let nextMessageIsFirstLevel = nextMessage?.replyMessage == nil
+                let prevMessageIsFirstLevel = prevMessage?.replyMessage == nil
+
+                let positionInComments: PositionInCommentsGroup
+                if message.replyMessage == nil && !nextMessageIsAReply {
+                    positionInComments = .singleFirstLevelPost
+                } else if message.replyMessage == nil && nextMessageIsAReply {
+                    positionInComments = .firstLevelPostWithComments
+                } else if nextMessageIsFirstLevel {
+                    positionInComments = .lastComment
+                } else if prevMessageIsFirstLevel {
+                    positionInComments = .firstComment
+                } else {
+                    positionInComments = .middleComment
+                }
+
+                let positionInSection: PositionInSection
+                if !prevMessageExists, !nextMessageExists {
+                    positionInSection = .single
+                } else if !prevMessageExists {
+                    positionInSection = .first
+                } else if !nextMessageExists {
+                    positionInSection = .last
+                } else {
+                    positionInSection = .middle
+                }
+
+                let positionInChat: PositionInChat
+                if !isFirstSection, !isLastSection {
+                    positionInChat = .middle
+                } else if !prevMessageExists, !nextMessageExists, isFirstSection, isLastSection {
+                    positionInChat = .single
+                } else if !prevMessageExists, isFirstSection {
+                    positionInChat = .first
+                } else if !nextMessageExists, isLastSection {
+                    positionInChat = .last
+                } else {
+                    positionInChat = .middle
+                }
+
+                let commentsPosition = CommentsPosition(
+                    inCommentsGroup: positionInComments, inSection: positionInSection,
+                    inChat: positionInChat)
+
+                return MessageRow(
+                    message: message, positionInUserGroup: positionInUserGroup,
+                    positionInMessagesSection: positionInMessagesSection,
+                    commentsPosition: commentsPosition)
+            }
+            .reversed()
+    }
+}
+
+private let sectionCache = SectionCache()
+
 extension ChatView {
 
     nonisolated static func mapMessages(_ messages: [Message], chatType: ChatType, replyMode: ReplyMode) -> [MessagesSection] {
@@ -14,10 +159,13 @@ extension ChatView {
             fatalError("Messages can not have duplicate ids, please make sure every message gets a unique id")
         }
 
+        guard !messages.isEmpty else { return [] }
+        
         let result: [MessagesSection]
         switch replyMode {
         case .quote:
-            result = mapMessagesQuoteModeReplies(messages, chatType: chatType, replyMode: replyMode)
+            // Use cached mapping for instant performance
+            result = sectionCache.mapMessagesWithCache(messages, chatType: chatType, replyMode: replyMode)
         case .answer:
             result = mapMessagesCommentModeReplies(messages, chatType: chatType, replyMode: replyMode)
         }
@@ -181,4 +329,3 @@ extension ChatView {
             .reversed()
     }
 }
-

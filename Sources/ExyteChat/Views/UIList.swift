@@ -117,14 +117,68 @@ struct UIList<MessageContent: View, InputView: View>: UIViewRepresentable {
             }
             return
         }
+        
+        // PERFORMANCE FIX: Fast path for single message addition (most common case)
+        let oldTotalRows = coordinator.sections.reduce(0) { $0 + $1.rows.count }
+        let newTotalRows = sections.reduce(0) { $0 + $1.rows.count }
+        
+        if newTotalRows == oldTotalRows + 1 && sections.count >= coordinator.sections.count {
+            if sections.count == coordinator.sections.count {
+                // New message in existing section
+                if sections[0].rows.count == coordinator.sections[0].rows.count + 1 {
+                    coordinator.sections = sections
+                    if let lastSection = sections.last {
+                        coordinator.paginationTargetIndexPath = IndexPath(row: lastSection.rows.count - 1, section: sections.count - 1)
+                    }
+                    
+                    tableView.beginUpdates()
+                    tableView.insertRows(at: [IndexPath(row: 0, section: 0)], with: .top)
+                    tableView.endUpdates()
+                    
+                    if isScrolledToBottom {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                            if !coordinator.sections.isEmpty {
+                                tableView.scrollToRow(at: IndexPath(row: 0, section: 0), at: .bottom, animated: true)
+                            }
+                        }
+                    }
+                    
+                    if !isScrollEnabled {
+                        tableContentHeight = tableView.contentSize.height
+                    }
+                    return
+                }
+            } else if sections.count == coordinator.sections.count + 1 {
+                // New date section created
+                coordinator.sections = sections
+                if let lastSection = sections.last {
+                    coordinator.paginationTargetIndexPath = IndexPath(row: lastSection.rows.count - 1, section: sections.count - 1)
+                }
+                
+                tableView.beginUpdates()
+                tableView.insertSections([0], with: .top)
+                tableView.endUpdates()
+                
+                if isScrolledToBottom {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                        if !coordinator.sections.isEmpty {
+                            tableView.scrollToRow(at: IndexPath(row: 0, section: 0), at: .bottom, animated: true)
+                        }
+                    }
+                }
+                
+                if !isScrollEnabled {
+                    tableContentHeight = tableView.contentSize.height
+                }
+                return
+            }
+        }
 
         if let lastSection = sections.last {
             coordinator.paginationTargetIndexPath = IndexPath(row: lastSection.rows.count - 1, section: sections.count - 1)
         }
 
         let prevSections = coordinator.sections
-        //print("0 whole sections:", runID, "\n")
-        //print("whole previous:\n", formatSections(prevSections), "\n")
         let splitInfo = await performSplitInBackground(prevSections, sections)
         await applyUpdatesToTable(tableView, splitInfo: splitInfo) {
             coordinator.sections = $0
