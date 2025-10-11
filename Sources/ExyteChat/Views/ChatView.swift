@@ -303,12 +303,15 @@ public struct ChatView<MessageContent: View, InputViewContent: View, MenuAction:
                     } label: {
                         theme.images.scrollToBottom
                             .frame(width: 40, height: 40)
-                            .circleBackground(theme.colors.messageFriendBG)
+                            .background(
+                                Circle()
+                                    .fill(colorScheme == .dark ? theme.colors.messageFriendBG : Color(red: 0xEF/255.0, green: 0xF5/255.0, blue: 0xF9/255.0))
+                            )
                             .foregroundStyle(theme.colors.sendButtonBackground)
                             .shadow(color: .primary.opacity(0.1), radius: 2, y: 1)
                     }
-                    .padding(.trailing, MessageView.horizontalScreenEdgePadding)
-                    .padding(.bottom, 8)
+                    .padding(.trailing, MessageView.horizontalScreenEdgePadding + 4)
+                    .padding(.bottom, 24)
                 }
             }
             
@@ -388,27 +391,9 @@ public struct ChatView<MessageContent: View, InputViewContent: View, MenuAction:
     }
 
     var inputView: some View {
-        Group {
-            if let inputViewBuilder = inputViewBuilder {
-                inputViewBuilder($inputViewModel.text, inputViewModel.attachments, inputViewModel.state, .message, inputViewModel.inputViewAction()) {
-                    globalFocusState.focus = nil
-                }
-            } else {
-                InputView(
-                    viewModel: inputViewModel,
-                    inputFieldId: viewModel.inputFieldId,
-                    style: .message,
-                    availableInputs: availableInputs,
-                    messageStyler: messageStyler,
-                    recorderSettings: recorderSettings,
-                    localization: localization
-                )
-            }
-        }
-        .sizeGetter($inputViewSize)
-        .environmentObject(globalFocusState)
-        .onAppear(perform: inputViewModel.onStart)
-        .onDisappear(perform: inputViewModel.onStop)
+        // Replace default input view with transparent spacer for custom input
+        Color.clear
+            .frame(height: 30)
     }
     
     func messageMenu(_ row: MessageRow) -> some View {

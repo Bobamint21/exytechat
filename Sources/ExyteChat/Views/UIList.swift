@@ -65,6 +65,8 @@ struct UIList<MessageContent: View, InputView: View>: UIViewRepresentable {
         tableView.scrollsToTop = false
         tableView.isScrollEnabled = isScrollEnabled
         tableView.keyboardDismissMode = keyboardDismissMode
+        // Add 20px top content inset for spacing (becomes bottom due to 180° rotation)
+        tableView.contentInset = UIEdgeInsets(top: 28, left: 0, bottom: 0, right: 0)
 
         NotificationCenter.default.addObserver(forName: .onScrollToBottom, object: nil, queue: nil) { _ in
             DispatchQueue.main.async {
@@ -625,33 +627,177 @@ struct UIList<MessageContent: View, InputView: View>: UIViewRepresentable {
             tableViewCell.backgroundColor = UIColor(mainBackgroundColor)
 
             let row = sections[indexPath.section].rows[indexPath.row]
-            tableViewCell.contentConfiguration = UIHostingConfiguration {
-                ChatMessageView(
-                    viewModel: viewModel, messageBuilder: messageBuilder, row: row, chatType: type,
-                    avatarSize: avatarSize, tapAvatarClosure: tapAvatarClosure,
-                    messageStyler: messageStyler, shouldShowLinkPreview: shouldShowLinkPreview,
-                    isDisplayingMessageMenu: false, showMessageTimeView: showMessageTimeView,
-                    messageLinkPreviewLimit: messageLinkPreviewLimit, messageFont: messageFont
-                )
-                .transition(.scale)
-                .background(MessageMenuPreferenceViewSetter(id: row.id))
-                .rotationEffect(Angle(degrees: (type == .conversation ? 180 : 0)))
-                .applyIf(showMessageMenuOnLongPress) {
-                    $0.simultaneousGesture(
-                        TapGesture().onEnded { } // add empty tap to prevent iOS17 scroll breaking bug (drag on cells stops working)
+            
+            // Check if this is a system message (e.g., "User joined the clan")
+            if row.message.user.type == .system {
+                tableViewCell.contentConfiguration = UIHostingConfiguration {
+                    systemMessageView(for: row.message)
+                        .rotationEffect(Angle(degrees: (type == .conversation ? 180 : 0)))
+                }
+                .minSize(width: 0, height: 0)
+                .margins(.all, 0)
+            } else {
+                tableViewCell.contentConfiguration = UIHostingConfiguration {
+                    ChatMessageView(
+                        viewModel: viewModel, messageBuilder: messageBuilder, row: row, chatType: type,
+                        avatarSize: avatarSize, tapAvatarClosure: tapAvatarClosure,
+                        messageStyler: messageStyler, shouldShowLinkPreview: shouldShowLinkPreview,
+                        isDisplayingMessageMenu: false, showMessageTimeView: showMessageTimeView,
+                        messageLinkPreviewLimit: messageLinkPreviewLimit, messageFont: messageFont
                     )
-                    .onLongPressGesture {
-                        // Trigger haptic feedback
-                        self.impactGenerator.impactOccurred()
-                        // Launch the message menu
-                        self.viewModel.messageMenuRow = row
+                    .transition(.scale)
+                    .background(MessageMenuPreferenceViewSetter(id: row.id))
+                    .rotationEffect(Angle(degrees: (type == .conversation ? 180 : 0)))
+                    .applyIf(showMessageMenuOnLongPress) {
+                        $0.simultaneousGesture(
+                            TapGesture().onEnded { } // add empty tap to prevent iOS17 scroll breaking bug (drag on cells stops working)
+                        )
+                        .onLongPressGesture(minimumDuration: 0.2) {
+                            // Trigger haptic feedback
+                            self.impactGenerator.impactOccurred()
+                            // Launch the message menu
+                            self.viewModel.messageMenuRow = row
+                        }
                     }
                 }
+                .minSize(width: 0, height: 0)
+                .margins(.all, 0)
             }
-            .minSize(width: 0, height: 0)
-            .margins(.all, 0)
 
             return tableViewCell
+        }
+        
+        // System message view builder (centered, no bubble, like date headers)
+        @ViewBuilder
+        func systemMessageView(for message: Message) -> some View {
+            let parsedMessage = parseSystemMessage(message.text)
+            
+            HStack(spacing: 0) {
+                Spacer(minLength: 0)
+                
+                if parsedMessage.hasUsername {
+                    // System message with username highlighting - allow wrapping but keep words together
+                    (Text(parsedMessage.username)
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(
+                            LinearGradient(
+                                colors: [
+                                    Color(red: 0, green: 0x78/255.0, blue: 1.0), // #0078FF (lighter)
+                                    Color(red: 0, green: 0, blue: 1.0)           // #0000FF (darker)
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                    +
+                    Text(parsedMessage.action)
+                        .font(.system(size: 14))
+                        .foregroundColor(.gray)
+                    +
+                    (parsedMessage.hasSecondUsername && parsedMessage.secondUsername != nil ?
+                        Text(parsedMessage.secondUsername!)
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(
+                                LinearGradient(
+                                    colors: [
+                                        Color(red: 0, green: 0x78/255.0, blue: 1.0), // #0078FF (lighter)
+                                        Color(red: 0, green: 0, blue: 1.0)           // #0000FF (darker)
+                                    ],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
+                        : Text("")
+                    )
+                    +
+                    (parsedMessage.remainingText != nil ?
+                        Text(parsedMessage.remainingText!)
+                            .font(.system(size: 14))
+                            .foregroundColor(.gray)
+                        : Text("")
+                    ))
+                    .multilineTextAlignment(.center)
+                } else {
+                    // Regular system message without username
+                    Text(message.text)
+                        .font(.system(size: 14))
+                        .foregroundColor(.gray)
+                        .multilineTextAlignment(.center)
+                }
+                
+                Spacer(minLength: 0)
+            }
+            .padding(.vertical, 8)
+            .padding(.horizontal, 16)
+        }
+        
+        // Parse system messages to extract username and action
+        private func parseSystemMessage(_ text: String) -> (username: String, action: String, hasUsername: Bool, secondUsername: String?, hasSecondUsername: Bool, remainingText: String?) {
+            print("🔍 EXYTE PARSING: '\(text)'")
+            
+            // Special handling for promotion/demotion messages: "Actor promoted/demoted Target to Role"
+            if let promotedRange = text.range(of: " promoted ") {
+                let actor = String(text[..<promotedRange.lowerBound])
+                let afterPromoted = String(text[promotedRange.upperBound...])
+                print("🔍 EXYTE PROMOTED: actor='\(actor)', afterPromoted='\(afterPromoted)'")
+                
+                // Find " to " to extract the target username and role
+                if let toRange = afterPromoted.range(of: " to ") {
+                    let target = String(afterPromoted[..<toRange.lowerBound])
+                    let role = String(afterPromoted[toRange.lowerBound...]) // Include " to RoleName"
+                    print("🔍 EXYTE PROMOTED RESULT: actor='\(actor)', target='\(target)', role='\(role)'")
+                    
+                    return (actor, " promoted ", !actor.isEmpty, target, !target.isEmpty, role)
+                }
+            }
+            
+            if let demotedRange = text.range(of: " demoted ") {
+                let actor = String(text[..<demotedRange.lowerBound])
+                let afterDemoted = String(text[demotedRange.upperBound...])
+                print("🔍 EXYTE DEMOTED: actor='\(actor)', afterDemoted='\(afterDemoted)'")
+                
+                // Find " to " to extract the target username and role
+                if let toRange = afterDemoted.range(of: " to ") {
+                    let target = String(afterDemoted[..<toRange.lowerBound])
+                    let role = String(afterDemoted[toRange.lowerBound...]) // Include " to RoleName"
+                    print("🔍 EXYTE DEMOTED RESULT: actor='\(actor)', target='\(target)', role='\(role)'")
+                    
+                    return (actor, " demoted ", !actor.isEmpty, target, !target.isEmpty, role)
+                }
+            }
+            
+            // Standard single-username patterns
+            let patterns = [
+                " joined the clan",
+                " left the clan",
+                " was promoted",
+                " was demoted",
+                " was kicked",
+                " created the clan",
+                " accepted an invitation and joined the clan",
+                " accepted a clan invite",
+                " left the clan. Clan disbanded.",
+                " is already in a clan",
+                " has reached the maximum of",
+                " is already a member"
+            ]
+            
+            for pattern in patterns {
+                if let range = text.range(of: pattern) {
+                    let username = String(text[..<range.lowerBound])
+                    let action = String(text[range.lowerBound...])
+                    
+                    // Only highlight if there's actually a username
+                    let hasUsername = !username.isEmpty &&
+                                    !username.lowercased().contains("a member") &&
+                                    !username.lowercased().contains("member") &&
+                                    username.trimmingCharacters(in: .whitespaces).count > 0
+                    
+                    return (username, action, hasUsername, nil, false, nil)
+                }
+            }
+            
+            return ("", text, false, nil, false, nil)
         }
 
         func tableView(_ tableView: UITableView, willDisplay cell: UITableViewCell, forRowAt indexPath: IndexPath) {

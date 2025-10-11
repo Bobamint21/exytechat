@@ -297,19 +297,19 @@ struct MessageView: View {
                     }
                     timeView
                 }
-                .padding(.vertical, 8)
+                .padding(.vertical, 6)
             case .vstack:
                 VStack(alignment: .trailing, spacing: 4) {
                     messageView
                     timeView
                 }
-                .padding(.vertical, 8)
+                .padding(.vertical, 6)
             case .overlay:
                 messageView
-                    .padding(.vertical, 8)
+                    .padding(.vertical, 6)
                     .overlay(alignment: .bottomTrailing) {
                         timeView
-                            .padding(.vertical, 8)
+                            .padding(.vertical, 6)
                     }
             }
         }
