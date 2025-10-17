@@ -12,6 +12,11 @@ private class SectionCache {
     private var cachedSections: [Date: MessagesSection] = [:]
     private var lastMessageIDs: [String] = []
     
+    func clearCache() {
+        cachedSections.removeAll()
+        lastMessageIDs.removeAll()
+    }
+    
     func mapMessagesWithCache(_ messages: [Message], chatType: ChatType, replyMode: ReplyMode) -> [MessagesSection] {
         let messageIDs = messages.map { $0.id }
         
@@ -152,7 +157,21 @@ private class SectionCache {
 
 private let sectionCache = SectionCache()
 
+// MARK: - Public Cache Management
+/// Non-generic helper to clear the global section cache
+public enum ChatViewCache {
+    /// Clear the global section cache to prevent data bleeding between different chats
+    public nonisolated static func clearSectionCache() {
+        sectionCache.clearCache()
+    }
+}
+
 extension ChatView {
+
+    /// Clear the global section cache to prevent data bleeding between different chats
+    public nonisolated static func clearSectionCache() {
+        ChatViewCache.clearSectionCache()
+    }
 
     nonisolated static func mapMessages(_ messages: [Message], chatType: ChatType, replyMode: ReplyMode) -> [MessagesSection] {
         guard messages.hasUniqueIDs() else {
